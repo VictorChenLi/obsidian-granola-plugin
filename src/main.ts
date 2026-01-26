@@ -16,20 +16,19 @@ export default class GranolaSyncPlugin extends Plugin {
 	settings: GranolaSyncSettings = DEFAULT_SETTINGS;
 	private isSyncing = false;
 	private syncIntervalId: number | null = null;
+	private ribbonIconEl: HTMLElement | null = null;
 
 	override async onload(): Promise<void> {
 		await this.loadSettings();
 
-		// Add ribbon icon
-		this.addRibbonIcon("refresh-cw", "Sync Granola meetings", () => {
-			void this.syncMeetings();
-		});
+		// Add ribbon icon if enabled
+		this.updateRibbonIcon();
 
 		// Add commands
 		this.addCommand({
 			id: "sync-meetings",
 			name: "Sync meetings",
-			callback: () => void this.syncMeetings(),
+			callback: () => void this.syncMeetings(true),
 		});
 
 		this.addCommand({
@@ -81,6 +80,17 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 	}
 
+	updateRibbonIcon(): void {
+		if (this.settings.showRibbonIcon && !this.ribbonIconEl) {
+			this.ribbonIconEl = this.addRibbonIcon("calendar-sync", "Sync Granola meetings", () => {
+				void this.syncMeetings(true);
+			});
+		} else if (!this.settings.showRibbonIcon && this.ribbonIconEl) {
+			this.ribbonIconEl.remove();
+			this.ribbonIconEl = null;
+		}
+	}
+
 	async loadSettings(): Promise<void> {
 		const data = await this.loadData() as Partial<GranolaSyncSettings> & { autoSyncOnStartup?: boolean } | null;
 		this.settings = { ...DEFAULT_SETTINGS, ...data };
@@ -95,19 +105,18 @@ export default class GranolaSyncPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	async syncMeetings(): Promise<void> {
+	async syncMeetings(manual = false): Promise<void> {
 		if (this.isSyncing) return;
 		this.isSyncing = true;
 
 		try {
-			await this.doSync();
+			await this.doSync(manual);
 		} finally {
 			this.isSyncing = false;
 		}
 	}
 
-	private async doSync(): Promise<void> {
-		new Notice("Syncing Granola meetings...");
+	private async doSync(manual: boolean): Promise<void> {
 
 		// Use defaults for empty settings
 		const folderPathSetting = this.settings.folderPath || DEFAULT_SETTINGS.folderPath;
@@ -230,11 +239,13 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 
-		// Show result notice
-		if (this.settings.skipExistingNotes) {
-			new Notice(`Synced ${created} new meeting${created !== 1 ? "s" : ""} (${skipped} skipped)`);
-		} else {
-			new Notice(`Synced ${created} new, ${updated} updated meeting${created + updated !== 1 ? "s" : ""}`);
+		// Show result notice only for manual syncs
+		if (manual) {
+			if (this.settings.skipExistingNotes) {
+				new Notice(`Synced ${created} new meeting${created !== 1 ? "s" : ""} (${skipped} skipped)`);
+			} else {
+				new Notice(`Synced ${created} new, ${updated} updated meeting${created + updated !== 1 ? "s" : ""}`);
+			}
 		}
 	}
 

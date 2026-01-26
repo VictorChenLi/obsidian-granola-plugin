@@ -21,14 +21,13 @@ This plugin reads directly from Granola's local cache file—no API calls or aut
 3. Click Install, then Enable
 
 ### Manual Installation
-1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/philfreo/obsidian-granola-simple-plugin/releases)
-2. Create folder: `<vault>/.obsidian/plugins/granola-sync/`
-3. Copy both files into that folder
-4. Enable the plugin in Settings → Community plugins
+1. Download the zip from the [latest release](https://github.com/philfreo/obsidian-granola-simple-plugin/releases)
+2. Extract to `<vault>/.obsidian/plugins/`
+3. Enable the plugin in Settings → Community plugins
 
 ## Usage
 
-1. **Sync meetings**: Click the refresh icon in the left ribbon, use the command palette ("Granola Simple: Sync meetings"), or click "Sync now" in settings
+1. **Sync meetings**: Click the ribbon icon, use the command palette ("Granola Simple: Sync meetings"), or click "Sync now" in settings
 2. **Configure settings**: Settings → Granola Simple
 
 ## Settings
@@ -39,6 +38,7 @@ This plugin reads directly from Granola's local cache file—no API calls or aut
 | Filename pattern | `{date} {title}` | Pattern for filenames. Supports `{date}`, `{title}`, `{id}` |
 | Template path | `Templates/Granola.md` | Path to your template file |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
+| Show ribbon icon | On | Show a sync button in the left sidebar |
 | Skip existing notes | On | Don't overwrite notes you've edited |
 | Match attendees by email | On | Link attendees to notes with matching email in frontmatter |
 

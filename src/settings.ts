@@ -28,6 +28,7 @@ export interface GranolaSyncSettings {
 	filenamePattern: string;
 	templatePath: string;
 	syncFrequency: SyncFrequency;
+	showRibbonIcon: boolean;
 	skipExistingNotes: boolean;
 	matchAttendeesByEmail: boolean;
 }
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	filenamePattern: "{date} {title}",
 	templatePath: "Templates/Granola.md",
 	syncFrequency: "15m",
+	showRibbonIcon: true,
 	skipExistingNotes: true,
 	matchAttendeesByEmail: true,
 };
@@ -61,7 +63,7 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 					.setButtonText("Sync now")
 					.setCta()
 					.onClick(() => {
-						void this.plugin.syncMeetings();
+						void this.plugin.syncMeetings(true);
 					})
 			);
 
@@ -119,6 +121,19 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 						this.plugin.setupSyncInterval();
 					});
 			});
+
+		new Setting(containerEl)
+			.setName("Show ribbon icon")
+			.setDesc("Show a sync button in the left ribbon")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showRibbonIcon)
+					.onChange(async (value) => {
+						this.plugin.settings.showRibbonIcon = value;
+						await this.plugin.saveSettings();
+						this.plugin.updateRibbonIcon();
+					})
+			);
 
 		new Setting(containerEl)
 			.setName("Skip existing notes")
