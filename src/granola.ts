@@ -52,8 +52,7 @@ export interface GranolaCache {
 }
 
 function parseJson<T>(json: string): T {
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-return -- centralizes unsafe JSON.parse cast
-	return JSON.parse(json);
+	return JSON.parse(json) as T;
 }
 
 function getGranolaDir(): string {
