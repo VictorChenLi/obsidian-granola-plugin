@@ -2,7 +2,11 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import StarterKit from "@tiptap/starter-kit";
-import { renderToMarkdown } from "@tiptap/static-renderer";
+import {
+	renderToMarkdown,
+	serializeChildrenToHTMLString,
+} from "@tiptap/static-renderer";
+import type { Node } from "@tiptap/pm/model";
 
 export interface GranolaDocument {
 	id: string;
@@ -68,7 +72,9 @@ function getGranolaDir(): string {
 export function getCurrentUserId(): string | null {
 	try {
 		const authFile = join(getGranolaDir(), "supabase.json");
-		const auth = parseJson<{ user_info?: string }>(readFileSync(authFile, "utf-8"));
+		const auth = parseJson<{ user_info?: string }>(
+			readFileSync(authFile, "utf-8"),
+		);
 		const userInfo = parseJson<{ id?: string }>(auth.user_info || "{}");
 		return userInfo.id || null;
 	} catch (e) {
@@ -102,12 +108,69 @@ export function readGranolaCache(): GranolaCache | null {
 
 const extensions = [StarterKit];
 
+// Helper to recursively render list content with proper indentation
+function renderListContent(node: Node, depth: number): string {
+	const result: string[] = [];
+
+	// This assumes 4-space indent, not sure of a way to detect user's preferred
+	// indentation style in Obsidian.
+	const indent = "    ".repeat(depth);
+
+	node.forEach((child) => {
+		if (child.type.name === "listItem") {
+			const itemContent: string[] = [];
+			child.forEach((itemChild) => {
+				if (
+					itemChild.type.name === "bulletList" ||
+					itemChild.type.name === "orderedList"
+				) {
+					// Nested list - render with increased depth
+					itemContent.push(renderListContent(itemChild, depth + 1));
+				} else if (itemChild.type.name === "paragraph") {
+					// Text content
+					itemContent.push(itemChild.textContent);
+				} else {
+					itemContent.push(itemChild.textContent);
+				}
+			});
+			// First item gets the bullet, rest are nested lists
+			const [firstContent, ...nestedLists] = itemContent;
+			result.push(`${indent}- ${firstContent || ""}`);
+			nestedLists.forEach((nested) => {
+				if (nested) result.push(nested);
+			});
+		}
+	});
+
+	return result.join("\n");
+}
+
 export function prosemirrorToMarkdown(
 	doc: ProseMirrorDoc | null | undefined,
 ): string {
 	if (!doc?.content?.length) return "";
 	try {
-		return renderToMarkdown({ content: doc as unknown as Parameters<typeof renderToMarkdown>[0]["content"], extensions });
+		return renderToMarkdown({
+			content: doc as unknown as Parameters<
+				typeof renderToMarkdown
+			>[0]["content"],
+			extensions,
+			options: {
+				nodeMapping: {
+					bulletList({ node }) {
+						return "\n" + renderListContent(node as Node, 0) + "\n";
+					},
+					orderedList({ children }) {
+						// Fall back to default for ordered lists
+						return "\n" + serializeChildrenToHTMLString(children);
+					},
+					listItem({ children }) {
+						// This won't be called for bullet lists since we handle them in bulletList
+						return serializeChildrenToHTMLString(children);
+					},
+				},
+			},
+		});
 	} catch (e) {
 		console.debug("Granola: could not convert ProseMirror to markdown", e);
 		return "";

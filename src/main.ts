@@ -132,11 +132,21 @@ export default class GranolaSyncPlugin extends Plugin {
 
 		const currentUserId = getCurrentUserId();
 
-		// Filter documents for current user, excluding deleted
+		// Filter documents for current user, excluding deleted and incomplete meetings
 		const documents = Object.values(cache.documents).filter(
-			(doc) =>
-				(!currentUserId || doc.user_id === currentUserId) &&
-				!doc.deleted_at
+			(doc) => {
+				if (currentUserId && doc.user_id !== currentUserId) return false;
+				if (doc.deleted_at) return false;
+
+				// Skip meetings without AI-generated panels (Summary, etc.)
+				// This ensures we wait for Granola to finish processing
+				const panels = cache.documentPanels[doc.id];
+				if (!panels || Object.keys(panels).length === 0) {
+					return false;
+				}
+
+				return true;
+			}
 		);
 
 		if (documents.length === 0) {
