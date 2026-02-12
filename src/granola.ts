@@ -158,7 +158,7 @@ export function prosemirrorToMarkdown(
 			options: {
 				nodeMapping: {
 					bulletList({ node }) {
-						return "\n" + renderListContent(node as Node, 0) + "\n";
+						return "\n" + renderListContent(node, 0) + "\n";
 					},
 					orderedList({ children }) {
 						// Fall back to default for ordered lists
