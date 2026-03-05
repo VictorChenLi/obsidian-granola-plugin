@@ -13,7 +13,8 @@ tags:
 
 {{granola_private_notes}}
 {{/granola_private_notes}}
-{{#granola_enhanced_notes}}
+{{#granola_enhanced_notes}}## Summary
+
 {{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
 {{#granola_transcript}}
