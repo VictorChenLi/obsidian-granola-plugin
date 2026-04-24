@@ -2,14 +2,49 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { GranolaAuthProvider } from "./auth";
 import { nodeFetch } from "./fetch";
+import {
+	RateLimiter,
+	isRateLimitSignal,
+	withRateLimitRetry,
+} from "./rate-limiter";
 
 const MCP_SERVER_URL = "https://mcp.granola.ai/mcp";
 
-export type SyncTimeRange = "this_week" | "last_week" | "last_30_days";
+// Granola's documented limit averages ~100 requests per minute across all
+// tools (https://docs.granola.ai/help-center/sharing/integrations/mcp).
+// We stay well under that to leave headroom for other clients the user may
+// have connected (Claude, ChatGPT, etc.).
+const RATE_LIMIT_MAX_REQUESTS = 60;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+const RETRY_OPTIONS = {
+	maxAttempts: 5,
+	baseDelayMs: 2_000,
+	maxDelayMs: 60_000,
+};
+
+export class RateLimitError extends Error {
+	constructor(message = "Granola rate limit exceeded after retries") {
+		super(message);
+		this.name = "RateLimitError";
+	}
+}
+
+export type SyncTimeRange = string;
+
+export interface ToolParamEnum {
+	name: string;
+	values: string[];
+}
 
 export class GranolaMcpClient {
 	private client: Client | null = null;
 	private authProvider: GranolaAuthProvider;
+	private toolSchemas: Record<string, Record<string, unknown>> = {};
+	private rateLimiter = new RateLimiter({
+		maxRequests: RATE_LIMIT_MAX_REQUESTS,
+		windowMs: RATE_LIMIT_WINDOW_MS,
+	});
 
 	constructor(authProvider: GranolaAuthProvider) {
 		this.authProvider = authProvider;
@@ -31,6 +66,12 @@ export class GranolaMcpClient {
 		);
 		try {
 			await this.client.connect(transport);
+			// Discover tool schemas (best-effort; not fatal)
+			try {
+				await this.refreshToolSchemas();
+			} catch (e) {
+				console.warn("Granola: failed to fetch tool schemas", e);
+			}
 		} catch (e) {
 			this.client = null;
 			throw e;
@@ -58,8 +99,52 @@ export class GranolaMcpClient {
 		await transport.finishAuth(authorizationCode);
 	}
 
-	async listMeetings(timeRange: SyncTimeRange): Promise<string> {
-		return this.callToolText("list_meetings", { time_range: timeRange });
+	private async refreshToolSchemas(): Promise<void> {
+		if (!this.client) return;
+		const res = await this.client.listTools();
+		this.toolSchemas = {};
+		for (const tool of res.tools) {
+			this.toolSchemas[tool.name] = tool.inputSchema as Record<string, unknown>;
+		}
+	}
+
+	/**
+	 * Return the list of allowed enum values for a tool's input parameter,
+	 * or null if unknown. Useful for building setting dropdowns dynamically.
+	 */
+	getParamEnum(toolName: string, paramName: string): string[] | null {
+		const schema = this.toolSchemas[toolName];
+		if (!schema) return null;
+		const properties = schema.properties as Record<string, unknown> | undefined;
+		if (!properties) return null;
+		const prop = properties[paramName] as Record<string, unknown> | undefined;
+		if (!prop) return null;
+		const enumValues = prop.enum;
+		if (Array.isArray(enumValues)) {
+			return enumValues.filter((v): v is string => typeof v === "string");
+		}
+		return null;
+	}
+
+	hasTool(toolName: string): boolean {
+		return toolName in this.toolSchemas;
+	}
+
+	hasToolParam(toolName: string, paramName: string): boolean {
+		const schema = this.toolSchemas[toolName];
+		if (!schema) return false;
+		const properties = schema.properties as Record<string, unknown> | undefined;
+		return Boolean(properties && paramName in properties);
+	}
+
+	async listMeetings(timeRange: SyncTimeRange, folderId?: string): Promise<string> {
+		const args: Record<string, unknown> = { time_range: timeRange };
+		if (folderId) args.folder_id = folderId;
+		return this.callToolText("list_meetings", args);
+	}
+
+	async listMeetingFolders(): Promise<string> {
+		return this.callToolText("list_meeting_folders", {});
 	}
 
 	async getMeetings(meetingIds: string[]): Promise<string> {
@@ -74,10 +159,33 @@ export class GranolaMcpClient {
 		if (!this.client) {
 			throw new Error("Not connected to Granola");
 		}
-		const result = await this.client.callTool({ name, arguments: args });
-		return (result.content as Array<{ type: string; text?: string }>)
-			.filter((c) => c.type === "text" && typeof c.text === "string")
-			.map((c) => c.text!)
-			.join("\n");
+		const client = this.client;
+
+		try {
+			return await withRateLimitRetry(
+				async () => {
+					await this.rateLimiter.acquire();
+					const result = await client.callTool({ name, arguments: args });
+					return (result.content as Array<{ type: string; text?: string }>)
+						.filter((c) => c.type === "text" && typeof c.text === "string")
+						.map((c) => c.text!)
+						.join("\n");
+				},
+				RETRY_OPTIONS,
+				(attempt, delayMs) => {
+					this.rateLimiter.markSaturated();
+					console.warn(
+						`Granola: rate-limited on ${name} (attempt ${attempt}), backing off ${delayMs}ms`,
+					);
+				},
+			);
+		} catch (error) {
+			if (isRateLimitSignal(error)) {
+				throw new RateLimitError(
+					`Granola rate limit exceeded on ${name} after ${RETRY_OPTIONS.maxAttempts} attempts`,
+				);
+			}
+			throw error;
+		}
 	}
 }

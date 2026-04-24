@@ -28,6 +28,14 @@ export interface MeetingData {
 	enhancedNotes: string;
 	transcript: string;
 	participants: ParsedParticipant[];
+	folder: string; // Granola folder title (empty string if unknown)
+}
+
+export interface ParsedFolder {
+	id: string;
+	title: string;
+	description: string;
+	noteCount: number;
 }
 
 /**
@@ -93,15 +101,23 @@ export function parseParticipants(text: string): ParsedParticipant[] {
 }
 
 /**
- * Parse transcript response (JSON with id, title, transcript fields)
+ * Parse transcript response (JSON with id, title, transcript fields).
+ * Returns empty string if the payload is actually a rate-limit / error message
+ * so we don't persist "Rate limit exceeded..." into meeting notes.
  */
 export function parseTranscriptResponse(text: string): string {
 	try {
 		const data = JSON.parse(text) as { transcript?: string };
 		return data.transcript?.trim() || "";
 	} catch {
-		// If not JSON, return as-is
-		return text.trim();
+		// Not JSON. Be defensive: the MCP server sometimes returns a plain-text
+		// error (e.g. "Rate limit exceeded. Please slow down requests.") which
+		// should not be saved as if it were a transcript.
+		const trimmed = text.trim();
+		if (/^(rate[\s-]?limit|too many requests|please slow down|error:|unauthorized)/i.test(trimmed)) {
+			return "";
+		}
+		return trimmed;
 	}
 }
 
@@ -144,6 +160,7 @@ export function parseGranolaDate(dateStr: string): { isoDate: string; time: stri
 export function buildMeetingData(
 	details: ParsedMeetingDetails,
 	transcript: string,
+	folder = "",
 ): MeetingData {
 	const { isoDate, time, isoDateTime } = parseGranolaDate(details.date);
 
@@ -158,5 +175,71 @@ export function buildMeetingData(
 		enhancedNotes: details.summary,
 		transcript: formatTranscriptText(transcript),
 		participants: details.participants,
+		folder,
 	};
+}
+
+/**
+ * Parse the list_meeting_folders response. The MCP server returns an
+ * XML-ish document with <folder id="..." title="..." note_count="..."> entries
+ * containing a <description> child.
+ *
+ * We also accept a JSON response as a fallback in case the format differs.
+ */
+export function parseFoldersResponse(text: string): ParsedFolder[] {
+	const folders: ParsedFolder[] = [];
+	if (!text.trim()) return folders;
+
+	// Try JSON first.
+	try {
+		const parsed: unknown = JSON.parse(text);
+		const candidates: unknown[] | null = Array.isArray(parsed)
+			? parsed
+			: parsed && typeof parsed === "object" && Array.isArray((parsed as { folders?: unknown }).folders)
+			? (parsed as { folders: unknown[] }).folders
+			: null;
+		if (candidates) {
+			for (const raw of candidates) {
+				if (!raw || typeof raw !== "object") continue;
+				const r = raw as Record<string, unknown>;
+				const id = typeof r.id === "string" ? r.id : "";
+				const title = typeof r.title === "string"
+					? r.title
+					: typeof r.name === "string" ? r.name : "";
+				if (!id || !title) continue;
+				folders.push({
+					id,
+					title,
+					description: typeof r.description === "string" ? r.description : "",
+					noteCount:
+						typeof r.note_count === "number"
+							? r.note_count
+							: typeof r.noteCount === "number"
+							? r.noteCount
+							: 0,
+				});
+			}
+			return folders;
+		}
+	} catch {
+		// Not JSON — fall through to XML-ish parsing.
+	}
+
+	const folderRegex = /<folder\s+([^>]*?)>([\s\S]*?)<\/folder>/g;
+	let match;
+	while ((match = folderRegex.exec(text)) !== null) {
+		const [, attrs, body] = match;
+		const id = /\bid="([^"]+)"/.exec(attrs)?.[1] ?? "";
+		const title = /\btitle="([^"]*?)"/.exec(attrs)?.[1] ?? "";
+		const noteCountStr = /\bnote_count="([^"]*?)"/.exec(attrs)?.[1];
+		const descMatch = body.match(/<description>\s*([\s\S]*?)\s*<\/description>/);
+		if (!id || !title) continue;
+		folders.push({
+			id,
+			title,
+			description: descMatch ? descMatch[1].trim() : "",
+			noteCount: noteCountStr ? parseInt(noteCountStr, 10) || 0 : 0,
+		});
+	}
+	return folders;
 }

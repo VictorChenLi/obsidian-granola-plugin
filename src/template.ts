@@ -52,6 +52,8 @@ export function applyTemplate(
 		granola_date: meeting.date,
 		granola_created: meeting.created,
 		granola_updated: "",
+		granola_folder: meeting.folder,
+		granola_folder_linked: meeting.folder ? `[[${meeting.folder}]]` : "",
 		granola_private_notes: meeting.privateNotes,
 		granola_enhanced_notes: meeting.enhancedNotes,
 		granola_transcript: meeting.transcript,

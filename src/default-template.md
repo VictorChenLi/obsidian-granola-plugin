@@ -3,7 +3,8 @@ granola_id: {{granola_id}}
 granola_url: {{granola_url}}
 title: "{{granola_title}}"
 date: {{granola_date}}
-attendees:
+{{#granola_folder}}granola_folder: "{{granola_folder}}"
+{{/granola_folder}}attendees:
 {{granola_attendees_linked_list}}
 tags:
   - meeting

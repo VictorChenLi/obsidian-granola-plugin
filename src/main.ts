@@ -7,10 +7,11 @@ import {
 	SYNC_FREQUENCY_MS,
 } from "./settings";
 import { GranolaAuthProvider, type AuthStorage } from "./auth";
-import { GranolaMcpClient } from "./mcp-client";
+import { GranolaMcpClient, RateLimitError } from "./mcp-client";
 import {
 	parseMeetingsResponse,
 	parseTranscriptResponse,
+	parseFoldersResponse,
 	buildMeetingData,
 } from "./response-parser";
 import { loadTemplate, applyTemplate, generateFilename } from "./template";
@@ -134,6 +135,15 @@ export default class GranolaSyncPlugin extends Plugin {
 		return this.pluginData.oauthTokens !== undefined;
 	}
 
+	/**
+	 * Return the time_range enum values advertised by the MCP server, or null
+	 * if they haven't been discovered yet (e.g. not connected).
+	 */
+	getAvailableTimeRanges(): string[] | null {
+		if (!this.mcpClient) return null;
+		return this.mcpClient.getParamEnum("list_meetings", "time_range");
+	}
+
 	async connectAccount(): Promise<void> {
 		try {
 			await this.mcpClient.connect();
@@ -188,6 +198,60 @@ export default class GranolaSyncPlugin extends Plugin {
 		await this.saveData(this.pluginData);
 	}
 
+	/**
+	 * Build a map of meeting_id -> folder title by iterating Granola folders
+	 * and listing their meetings. Fails gracefully if the user is on a plan
+	 * that doesn't support folders.
+	 */
+	private async buildFolderMap(): Promise<Map<string, string>> {
+		const map = new Map<string, string>();
+		if (!this.mcpClient.hasTool("list_meeting_folders")) {
+			return map;
+		}
+
+		let folders: Array<{ id: string; title: string }>;
+		try {
+			const response = await this.mcpClient.listMeetingFolders();
+			folders = parseFoldersResponse(response);
+		} catch (error) {
+			// Likely a free/basic plan or transient error — skip folder sync.
+			console.warn("Granola: folder sync skipped", error);
+			return map;
+		}
+
+		const supportsFolderFilter = this.mcpClient.hasToolParam("list_meetings", "folder_id");
+		if (!supportsFolderFilter) {
+			return map;
+		}
+
+		for (const folder of folders) {
+			try {
+				const response = await this.mcpClient.listMeetings(
+					this.settings.syncTimeRange,
+					folder.id,
+				);
+				const meetings = parseMeetingsResponse(response);
+				for (const meeting of meetings) {
+					// First folder wins if a meeting appears in multiple.
+					if (!map.has(meeting.id)) {
+						map.set(meeting.id, folder.title);
+					}
+				}
+			} catch (error) {
+				if (error instanceof RateLimitError) {
+					console.warn(
+						"Granola: folder listing rate limited; returning partial folder map",
+						error,
+					);
+					break;
+				}
+				console.warn(`Granola: listMeetings for folder ${folder.title} failed`, error);
+			}
+		}
+
+		return map;
+	}
+
 	async syncMeetings(manual = false): Promise<void> {
 		if (this.isSyncing) return;
 		this.isSyncing = true;
@@ -229,6 +293,11 @@ export default class GranolaSyncPlugin extends Plugin {
 		try {
 			listResponse = await this.mcpClient.listMeetings(this.settings.syncTimeRange);
 		} catch (error) {
+			if (error instanceof RateLimitError) {
+				if (manual) new Notice("Granola rate limit hit — please try again in a minute.");
+				console.warn("Granola: listMeetings rate limited", error);
+				return;
+			}
 			if (manual) new Notice("Failed to fetch meetings from Granola");
 			console.error("Granola: listMeetings failed", error);
 			// Disconnect so we retry connection next time
@@ -241,6 +310,10 @@ export default class GranolaSyncPlugin extends Plugin {
 			if (manual) new Notice("No meetings found in Granola");
 			return;
 		}
+
+		// Build meeting_id -> folder map by iterating folders. Paid-plan only; fails
+		// silently on free plans.
+		const meetingIdToFolder = await this.buildFolderMap();
 
 		// Load template
 		let template: string;
@@ -315,12 +388,18 @@ export default class GranolaSyncPlugin extends Plugin {
 		const idsToFetch = meetingsToSync.map((m) => m.id);
 		const allDetails = [];
 
+		let rateLimitHit = false;
 		for (let i = 0; i < idsToFetch.length; i += 10) {
 			const batch = idsToFetch.slice(i, i + 10);
 			try {
 				const detailsResponse = await this.mcpClient.getMeetings(batch);
 				allDetails.push(...parseMeetingsResponse(detailsResponse));
 			} catch (error) {
+				if (error instanceof RateLimitError) {
+					console.warn("Granola: getMeetings rate limited, aborting remaining batches", error);
+					rateLimitHit = true;
+					break;
+				}
 				console.error("Granola: getMeetings batch failed", error);
 			}
 		}
@@ -338,16 +417,22 @@ export default class GranolaSyncPlugin extends Plugin {
 
 				// Optionally fetch transcript
 				let transcript = "";
-				if (this.settings.syncTranscripts) {
+				if (this.settings.syncTranscripts && !rateLimitHit) {
 					try {
 						const transcriptResponse = await this.mcpClient.getTranscript(details.id);
 						transcript = parseTranscriptResponse(transcriptResponse);
 					} catch (error) {
-						console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+						if (error instanceof RateLimitError) {
+							console.warn("Granola: transcript fetch rate limited, skipping remaining transcripts");
+							rateLimitHit = true;
+						} else {
+							console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+						}
 					}
 				}
 
-				const meetingData = buildMeetingData(details, transcript);
+				const folder = meetingIdToFolder.get(details.id) ?? "";
+				const meetingData = buildMeetingData(details, transcript, folder);
 				const content = applyTemplate(template, meetingData, emailToNoteTitle);
 				const existingFile = existingDocs.get(details.id);
 
@@ -366,11 +451,14 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 
 		if (manual) {
+			const suffix = rateLimitHit ? " — Granola rate limit hit, try again soon" : "";
 			if (this.settings.skipExistingNotes) {
-				new Notice(`Synced ${created} new meeting${created !== 1 ? "s" : ""} (${skipped} skipped)`);
+				new Notice(`Synced ${created} new meeting${created !== 1 ? "s" : ""} (${skipped} skipped)${suffix}`);
 			} else {
-				new Notice(`Synced ${created} new, ${updated} updated meeting${created + updated !== 1 ? "s" : ""}`);
+				new Notice(`Synced ${created} new, ${updated} updated meeting${created + updated !== 1 ? "s" : ""}${suffix}`);
 			}
+		} else if (rateLimitHit) {
+			new Notice("Granola rate limit hit during sync — some meetings will retry next cycle.");
 		}
 	}
 }
