@@ -102,13 +102,25 @@ export function parseParticipants(text: string): ParsedParticipant[] {
 
 /**
  * Parse transcript response (JSON with id, title, transcript fields).
+ *
+ * The `transcript` field may come back as:
+ *   - a single string (often with speaker labels separated by double spaces)
+ *   - an array of segments like `{ speaker, text, start_ms, end_ms }`
+ *
  * Returns empty string if the payload is actually a rate-limit / error message
  * so we don't persist "Rate limit exceeded..." into meeting notes.
  */
 export function parseTranscriptResponse(text: string): string {
 	try {
-		const data = JSON.parse(text) as { transcript?: string };
-		return data.transcript?.trim() || "";
+		const data = JSON.parse(text) as { transcript?: unknown; segments?: unknown };
+		const value = data.transcript ?? data.segments;
+		if (typeof value === "string") {
+			return value.trim();
+		}
+		if (Array.isArray(value)) {
+			return segmentsToString(value);
+		}
+		return "";
 	} catch {
 		// Not JSON. Be defensive: the MCP server sometimes returns a plain-text
 		// error (e.g. "Rate limit exceeded. Please slow down requests.") which
@@ -122,15 +134,102 @@ export function parseTranscriptResponse(text: string): string {
 }
 
 /**
- * Format raw transcript text with speaker breaks for readability.
- * Raw format: " Them: text... Me: text..."
+ * Join transcript segment objects into a delimited string that
+ * `formatTranscriptText` can normalize into paragraphs.
+ */
+function segmentsToString(segments: unknown[]): string {
+	const parts: string[] = [];
+	for (const seg of segments) {
+		if (!seg || typeof seg !== "object") continue;
+		const s = seg as Record<string, unknown>;
+		const speaker = typeof s.speaker === "string" && s.speaker.trim()
+			? s.speaker.trim()
+			: typeof s.source === "string" && s.source.trim()
+			? s.source.trim()
+			: "";
+		const text = typeof s.text === "string"
+			? s.text.trim()
+			: typeof s.content === "string"
+			? s.content.trim()
+			: "";
+		if (!text) continue;
+		parts.push(speaker ? `${speaker}: ${text}` : text);
+	}
+	return parts.join("\n\n");
+}
+
+// Matches a speaker label at the start of a chunk: "Me:", "Them:", "Phil Freo:",
+// "Speaker 1:". Kept intentionally narrow (<=40 chars, letters/digits/space/.'-)
+// so we don't mistake arbitrary prose ending in a colon for a speaker turn.
+const SPEAKER_LABEL_RE = /([A-Z][A-Za-z0-9.'\- ]{0,40}):/;
+
+/**
+ * Format raw transcript text for readable Markdown output.
+ *
+ * Granola's MCP transcript often arrives as one long string with speaker
+ * turns separated by two or more spaces (e.g. "  Me: hi  Them: hello"). We
+ * also try to handle:
+ *   - already-newline-delimited transcripts (preserve their breaks),
+ *   - generic speaker names, not just "Me:"/"Them:",
+ *   - timestamp markers like "[00:12:34]" or "(0:12)",
+ *   - plain prose with no structure (fall back to paragraphing by sentences).
  */
 export function formatTranscriptText(raw: string): string {
 	if (!raw) return "";
-	return raw
-		.trim()
-		.replace(/\s{2,}(Me:|Them:)/g, "\n\n**$1**")
-		.replace(/^(Me:|Them:)/, "**$1**");
+	let text = raw.replace(/\r\n/g, "\n").trim();
+	if (!text) return "";
+
+	// If it already has newlines, trust the existing structure. Just bold any
+	// leading speaker labels on each non-empty line for readability.
+	if (/\n/.test(text)) {
+		return text
+			.split(/\n+/)
+			.map((line) => boldSpeakerLabel(line.trim()))
+			.filter((line) => line.length > 0)
+			.join("\n\n");
+	}
+
+	// Break before a bracketed/parenthesized timestamp like [00:01:02] or (0:12).
+	text = text.replace(/\s*([[(]\s*\d{1,2}:\d{2}(?::\d{2})?\s*[\])])/g, "\n\n$1");
+
+	// Break before every generic speaker label that follows 2+ spaces.
+	text = text.replace(
+		/\s{2,}([A-Z][A-Za-z0-9.'\- ]{0,40}:)(?=\s)/g,
+		"\n\n**$1**",
+	);
+
+	// Bold a leading speaker label at the start of the transcript.
+	text = text.replace(/^([A-Z][A-Za-z0-9.'\- ]{0,40}:)(?=\s)/, "**$1**");
+
+	text = text.trim();
+
+	// If we still have a single huge blob without breaks, fall back to
+	// paragraphing by sentence runs (~3 sentences per paragraph).
+	if (!/\n/.test(text) && text.length > 400) {
+		text = paragraphBySentences(text);
+	}
+
+	return text;
+}
+
+function boldSpeakerLabel(line: string): string {
+	if (!line) return line;
+	const m = SPEAKER_LABEL_RE.exec(line);
+	if (m && m.index === 0) {
+		return `**${m[1]}:**${line.slice(m[0].length)}`;
+	}
+	return line;
+}
+
+function paragraphBySentences(text: string): string {
+	const sentences = text.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g);
+	if (!sentences || sentences.length <= 3) return text;
+	const paragraphs: string[] = [];
+	const chunkSize = 3;
+	for (let i = 0; i < sentences.length; i += chunkSize) {
+		paragraphs.push(sentences.slice(i, i + chunkSize).join(" ").trim());
+	}
+	return paragraphs.filter(Boolean).join("\n\n");
 }
 
 /**
