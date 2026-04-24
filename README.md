@@ -130,6 +130,15 @@ tags:
 {{/granola_transcript}}
 ```
 
+## Rate limits
+
+Granola's MCP server rate-limits requests (documented at ~100 req/min, but expensive tools like `get_meeting_transcript` are stricter, and any other MCP clients you have connected — Claude Desktop, ChatGPT, etc. — share the same budget). The plugin handles this as follows:
+
+- Client-side throttle to **30 requests / minute** (well under the documented ceiling).
+- Up to **3 retries** per call with exponential backoff (2s → ~20s cap).
+- **Circuit breaker**: after 3 rate-limit events within 60s the plugin stops all further API calls for 60s so it doesn't flail. The sync ends gracefully and resumes on the next interval.
+- If you hit the circuit frequently, turn off **Sync transcripts** — transcript calls are the heaviest and removing them roughly halves API pressure.
+
 ## Requirements
 
 - **Desktop only**: This plugin requires Node.js APIs available only in Obsidian's desktop app

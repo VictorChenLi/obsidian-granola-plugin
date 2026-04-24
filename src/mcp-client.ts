@@ -11,17 +11,29 @@ import {
 const MCP_SERVER_URL = "https://mcp.granola.ai/mcp";
 
 // Granola's documented limit averages ~100 requests per minute across all
-// tools (https://docs.granola.ai/help-center/sharing/integrations/mcp).
-// We stay well under that to leave headroom for other clients the user may
-// have connected (Claude, ChatGPT, etc.).
-const RATE_LIMIT_MAX_REQUESTS = 60;
+// tools (https://docs.granola.ai/help-center/sharing/integrations/mcp), but
+// the server is noticeably stricter for expensive tools like
+// get_meeting_transcript — likely because any other MCP clients the user has
+// connected (Claude, ChatGPT, etc.) share the same budget. Stay well under
+// the documented number so we keep a usable margin.
+const RATE_LIMIT_MAX_REQUESTS = 30;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
+// Retry policy for a single API call. Capped at ~15s worst case so a bad
+// minute doesn't stall the whole sync — the next cron tick will pick up
+// anything we skipped.
 const RETRY_OPTIONS = {
-	maxAttempts: 5,
+	maxAttempts: 3,
 	baseDelayMs: 2_000,
-	maxDelayMs: 60_000,
+	maxDelayMs: 20_000,
 };
+
+// Circuit breaker: after this many rate-limit events in the window, refuse
+// further calls for `CIRCUIT_OPEN_MS` so we stop hammering the server and let
+// the outer sync loop exit cleanly instead of flailing meeting-by-meeting.
+const CIRCUIT_THRESHOLD_EVENTS = 3;
+const CIRCUIT_WINDOW_MS = 60_000;
+const CIRCUIT_OPEN_MS = 60_000;
 
 export class RateLimitError extends Error {
 	constructor(message = "Granola rate limit exceeded after retries") {
@@ -53,6 +65,8 @@ export class GranolaMcpClient {
 		maxRequests: RATE_LIMIT_MAX_REQUESTS,
 		windowMs: RATE_LIMIT_WINDOW_MS,
 	});
+	private rateLimitEventTimes: number[] = [];
+	private circuitOpenUntil = 0;
 
 	constructor(authProvider: GranolaAuthProvider) {
 		this.authProvider = authProvider;
@@ -186,25 +200,84 @@ export class GranolaMcpClient {
 		return this.callToolText("get_meeting_transcript", { meeting_id: meetingId });
 	}
 
-	private async callToolText(name: string, args: Record<string, unknown>): Promise<string> {
-		if (!this.client) {
-			throw new Error("Not connected to Granola");
-		}
-		const client = this.client;
+	/**
+	 * Reset the circuit breaker and sampled event history. Call at the start
+	 * of a new sync run so a previous sync's penalty doesn't carry over.
+	 */
+	resetRateLimitCircuit(): void {
+		this.rateLimitEventTimes = [];
+		this.circuitOpenUntil = 0;
+	}
 
+	get isCircuitOpen(): boolean {
+		return Date.now() < this.circuitOpenUntil;
+	}
+
+	private recordRateLimitEvent(): void {
+		const now = Date.now();
+		this.rateLimitEventTimes = this.rateLimitEventTimes.filter(
+			(t) => now - t < CIRCUIT_WINDOW_MS,
+		);
+		this.rateLimitEventTimes.push(now);
+		if (this.rateLimitEventTimes.length >= CIRCUIT_THRESHOLD_EVENTS) {
+			this.circuitOpenUntil = now + CIRCUIT_OPEN_MS;
+			this.rateLimitEventTimes = [];
+			console.warn(
+				`Granola: rate-limit circuit opened for ${CIRCUIT_OPEN_MS}ms — aborting remaining API calls`,
+			);
+		}
+	}
+
+	private async ensureConnected(): Promise<void> {
+		if (!this.client) {
+			await this.connect();
+		}
+	}
+
+	private async callToolText(name: string, args: Record<string, unknown>): Promise<string> {
+		if (this.isCircuitOpen) {
+			throw new RateLimitError(
+				`Granola rate-limit circuit open; skipping ${name}`,
+			);
+		}
+		await this.ensureConnected();
+
+		const invoke = async (): Promise<string> => {
+			const client = this.client;
+			if (!client) {
+				throw new Error("Not connected to Granola");
+			}
+			await this.rateLimiter.acquire();
+			const result = await client.callTool({ name, arguments: args });
+			return (result.content as Array<{ type: string; text?: string }>)
+				.filter((c) => c.type === "text" && typeof c.text === "string")
+				.map((c) => c.text!)
+				.join("\n");
+		};
+
+		let triedReconnect = false;
 		try {
 			return await withRateLimitRetry(
 				async () => {
-					await this.rateLimiter.acquire();
-					const result = await client.callTool({ name, arguments: args });
-					return (result.content as Array<{ type: string; text?: string }>)
-						.filter((c) => c.type === "text" && typeof c.text === "string")
-						.map((c) => c.text!)
-						.join("\n");
+					try {
+						return await invoke();
+					} catch (err) {
+						// If the transport dropped mid-flight, reconnect once and
+						// retry the call in-place. Don't count this as a rate-limit
+						// event — it's a separate failure mode.
+						if (!triedReconnect && isTransportDropped(err)) {
+							triedReconnect = true;
+							console.warn(`Granola: reconnecting for ${name} after transport drop`);
+							await this.connect();
+							return await invoke();
+						}
+						throw err;
+					}
 				},
 				RETRY_OPTIONS,
 				(attempt, delayMs) => {
 					this.rateLimiter.markSaturated();
+					this.recordRateLimitEvent();
 					console.warn(
 						`Granola: rate-limited on ${name} (attempt ${attempt}), backing off ${delayMs}ms`,
 					);
@@ -212,6 +285,7 @@ export class GranolaMcpClient {
 			);
 		} catch (error) {
 			if (isRateLimitSignal(error)) {
+				this.recordRateLimitEvent();
 				throw new RateLimitError(
 					`Granola rate limit exceeded on ${name} after ${RETRY_OPTIONS.maxAttempts} attempts`,
 				);
@@ -219,4 +293,13 @@ export class GranolaMcpClient {
 			throw error;
 		}
 	}
+}
+
+function isTransportDropped(err: unknown): boolean {
+	const msg =
+		err instanceof Error ? err.message : typeof err === "string" ? err : "";
+	if (!msg) return false;
+	return /not connected|connection\s+(closed|reset|lost)|transport\s+closed|stream\s+closed/i.test(
+		msg,
+	);
 }
