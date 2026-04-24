@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type GranolaSyncPlugin from "./main";
-import type { SyncTimeRange } from "./mcp-client";
+import { UNLIMITED_TIME_RANGE, type SyncTimeRange } from "./mcp-client";
 
 export type SyncFrequency = "manual" | "startup" | "1m" | "15m" | "30m" | "60m" | "12h";
 
@@ -42,18 +42,13 @@ const SYNC_TIME_RANGE_LABELS: Record<string, string> = {
 	last_6_months: "Last 6 months",
 	last_year: "Last year",
 	last_12_months: "Last 12 months",
-	all_time: "All time (unlimited)",
-	all: "All time (unlimited)",
-	unlimited: "All time (unlimited)",
+	[UNLIMITED_TIME_RANGE]: "All time (paid plans only)",
 };
 
 const DEFAULT_TIME_RANGE_OPTIONS = [
 	"this_week",
 	"last_week",
 	"last_30_days",
-	"last_90_days",
-	"last_year",
-	"all_time",
 ];
 
 function humanizeTimeRange(value: string): string {
@@ -147,17 +142,25 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Time range")
-			.setDesc("How far back to look for meetings when syncing")
+			.setDesc(
+				"How far back to look for meetings when syncing. Granola's API constrains this to a fixed set of ranges; \"all time\" tries unlimited history (paid plans only).",
+			)
 			.addDropdown((dropdown) => {
 				const discovered = this.plugin.getAvailableTimeRanges();
-				const options = discovered && discovered.length > 0
-					? discovered
-					: DEFAULT_TIME_RANGE_OPTIONS;
-				const current = this.plugin.settings.syncTimeRange;
-				if (current && !options.includes(current)) {
-					options.unshift(current);
+				const base = discovered && discovered.length > 0
+					? [...discovered]
+					: [...DEFAULT_TIME_RANGE_OPTIONS];
+				// Always offer the unlimited sentinel in addition to the
+				// server-advertised enum, unless we know the server requires
+				// time_range.
+				if (!this.plugin.isTimeRangeRequired()) {
+					base.push(UNLIMITED_TIME_RANGE);
 				}
-				for (const value of options) {
+				const current = this.plugin.settings.syncTimeRange;
+				if (current && !base.includes(current)) {
+					base.unshift(current);
+				}
+				for (const value of base) {
 					dropdown.addOption(value, humanizeTimeRange(value));
 				}
 				dropdown
