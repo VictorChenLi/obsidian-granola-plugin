@@ -74,6 +74,14 @@ export default class GranolaSyncPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "log-mcp-schemas",
+			name: "Debug: log tool schemas to console",
+			callback: () => {
+				void this.logMcpSchemas();
+			},
+		});
+
+		this.addCommand({
 			id: "open-settings",
 			name: "Open settings",
 			callback: () => {
@@ -144,6 +152,15 @@ export default class GranolaSyncPlugin extends Plugin {
 		return this.mcpClient.getParamEnum("list_meetings", "time_range");
 	}
 
+	/**
+	 * Whether the Granola MCP server considers time_range a required argument.
+	 * Used by the settings UI to decide whether to offer an "unlimited" option.
+	 */
+	isTimeRangeRequired(): boolean {
+		if (!this.mcpClient) return true;
+		return this.mcpClient.isTimeRangeRequired();
+	}
+
 	async connectAccount(): Promise<void> {
 		try {
 			await this.mcpClient.connect();
@@ -196,6 +213,29 @@ export default class GranolaSyncPlugin extends Plugin {
 
 	private async savePluginData(): Promise<void> {
 		await this.saveData(this.pluginData);
+	}
+
+	private async logMcpSchemas(): Promise<void> {
+		if (!this.isAuthenticated()) {
+			new Notice("Connect to Granola first in settings.");
+			return;
+		}
+		if (!this.mcpClient.isConnected) {
+			try {
+				await this.mcpClient.connect();
+			} catch (error) {
+				new Notice("Failed to connect to Granola.");
+				console.error("Granola: debug connect failed", error);
+				return;
+			}
+		}
+		const schemas = this.mcpClient.getAllToolSchemas();
+		console.debug("=== Granola MCP tool schemas ===");
+		for (const [name, schema] of Object.entries(schemas)) {
+			console.debug(`— ${name} —`, schema);
+		}
+		console.debug("===============================");
+		new Notice("Granola tool schemas logged to console.");
 	}
 
 	/**
@@ -298,7 +338,12 @@ export default class GranolaSyncPlugin extends Plugin {
 				console.warn("Granola: listMeetings rate limited", error);
 				return;
 			}
-			if (manual) new Notice("Failed to fetch meetings from Granola");
+			if (manual) {
+				const hint = this.settings.syncTimeRange === "__all_time__"
+					? " Your plan may not support unlimited history — try \"Last 30 days\" instead."
+					: "";
+				new Notice(`Failed to fetch meetings from Granola.${hint}`);
+			}
 			console.error("Granola: listMeetings failed", error);
 			// Disconnect so we retry connection next time
 			await this.mcpClient.disconnect();

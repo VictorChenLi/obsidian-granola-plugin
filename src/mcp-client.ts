@@ -32,6 +32,14 @@ export class RateLimitError extends Error {
 
 export type SyncTimeRange = string;
 
+/**
+ * Sentinel value we use to mean "call list_meetings without a time_range
+ * parameter". The Granola MCP server's time_range enum is limited (currently
+ * this_week / last_week / last_30_days), but on paid plans the server treats
+ * an omitted time_range as unbounded history.
+ */
+export const UNLIMITED_TIME_RANGE = "__all_time__";
+
 export interface ToolParamEnum {
 	name: string;
 	values: string[];
@@ -138,9 +146,32 @@ export class GranolaMcpClient {
 	}
 
 	async listMeetings(timeRange: SyncTimeRange, folderId?: string): Promise<string> {
-		const args: Record<string, unknown> = { time_range: timeRange };
+		const args: Record<string, unknown> = {};
+		if (timeRange && timeRange !== UNLIMITED_TIME_RANGE) {
+			args.time_range = timeRange;
+		}
 		if (folderId) args.folder_id = folderId;
 		return this.callToolText("list_meetings", args);
+	}
+
+	/**
+	 * Whether `time_range` is listed in the list_meetings tool's `required`
+	 * array. When false, we can omit it to request unlimited history.
+	 */
+	isTimeRangeRequired(): boolean {
+		const schema = this.toolSchemas["list_meetings"];
+		if (!schema) return false;
+		const required = schema.required;
+		if (!Array.isArray(required)) return false;
+		return required.includes("time_range");
+	}
+
+	getToolSchema(toolName: string): Record<string, unknown> | null {
+		return this.toolSchemas[toolName] ?? null;
+	}
+
+	getAllToolSchemas(): Record<string, Record<string, unknown>> {
+		return this.toolSchemas;
 	}
 
 	async listMeetingFolders(): Promise<string> {
