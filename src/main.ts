@@ -296,6 +296,10 @@ export default class GranolaSyncPlugin extends Plugin {
 		if (this.isSyncing) return;
 		this.isSyncing = true;
 
+		// Reset the rate-limit circuit breaker so a cool-down from a previous
+		// sync doesn't spuriously short-circuit this run.
+		this.mcpClient.resetRateLimitCircuit();
+
 		try {
 			await this.doSync(manual);
 		} finally {
