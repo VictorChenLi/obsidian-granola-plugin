@@ -47,7 +47,7 @@ BRAT will automatically keep the plugin updated.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Time range | Last 30 days | How far back to look for meetings |
+| Time range | Last 30 days | How far back to look for meetings. Options are discovered from the Granola MCP server — on paid plans this includes "All time (unlimited)" |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
 | Sync transcripts | Off | Include full meeting transcripts (1 extra API call per meeting) |
 | Folder path | `Meetings` | Where to save meeting notes |
@@ -71,6 +71,8 @@ Create a template file to customize how your meeting notes look. Use these varia
 - `{{granola_date}}` - Date (YYYY-MM-DD)
 - `{{granola_url}}` - Link to meeting on Granola web
 - `{{granola_start_time}}` - Start time (e.g., "3:00 PM")
+- `{{granola_folder}}` - Granola folder title (paid plans only; empty otherwise)
+- `{{granola_folder_linked}}` - Folder as an Obsidian link: `[[MindBridge]]`
 
 ### Content
 - `{{granola_private_notes}}` - Your notes from the meeting
@@ -105,7 +107,8 @@ granola_id: {{granola_id}}
 granola_url: {{granola_url}}
 title: "{{granola_title}}"
 date: {{granola_date}}
-attendees:
+{{#granola_folder}}granola_folder: "{{granola_folder}}"
+{{/granola_folder}}attendees:
 {{granola_attendees_linked_list}}
 tags:
   - meeting

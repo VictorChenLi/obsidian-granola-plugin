@@ -24,11 +24,45 @@ export const SYNC_FREQUENCY_MS: Record<SyncFrequency, number | null> = {
 	"12h": 12 * 60 * 60 * 1000,
 };
 
-const SYNC_TIME_RANGE_OPTIONS: Record<SyncTimeRange, string> = {
+// Friendly labels for known time_range enum values. Any values the MCP server
+// advertises that aren't in this map fall back to an auto-generated label.
+const SYNC_TIME_RANGE_LABELS: Record<string, string> = {
+	today: "Today",
+	yesterday: "Yesterday",
 	this_week: "This week",
 	last_week: "Last week",
+	this_month: "This month",
+	last_month: "Last month",
+	last_7_days: "Last 7 days",
+	last_14_days: "Last 14 days",
 	last_30_days: "Last 30 days",
+	last_60_days: "Last 60 days",
+	last_90_days: "Last 90 days",
+	last_180_days: "Last 180 days",
+	last_6_months: "Last 6 months",
+	last_year: "Last year",
+	last_12_months: "Last 12 months",
+	all_time: "All time (unlimited)",
+	all: "All time (unlimited)",
+	unlimited: "All time (unlimited)",
 };
+
+const DEFAULT_TIME_RANGE_OPTIONS = [
+	"this_week",
+	"last_week",
+	"last_30_days",
+	"last_90_days",
+	"last_year",
+	"all_time",
+];
+
+function humanizeTimeRange(value: string): string {
+	if (SYNC_TIME_RANGE_LABELS[value]) return SYNC_TIME_RANGE_LABELS[value];
+	return value
+		.split("_")
+		.map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
+		.join(" ");
+}
 
 export interface GranolaSyncSettings {
 	folderPath: string;
@@ -115,13 +149,21 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 			.setName("Time range")
 			.setDesc("How far back to look for meetings when syncing")
 			.addDropdown((dropdown) => {
-				for (const [value, label] of Object.entries(SYNC_TIME_RANGE_OPTIONS)) {
-					dropdown.addOption(value, label);
+				const discovered = this.plugin.getAvailableTimeRanges();
+				const options = discovered && discovered.length > 0
+					? discovered
+					: DEFAULT_TIME_RANGE_OPTIONS;
+				const current = this.plugin.settings.syncTimeRange;
+				if (current && !options.includes(current)) {
+					options.unshift(current);
+				}
+				for (const value of options) {
+					dropdown.addOption(value, humanizeTimeRange(value));
 				}
 				dropdown
-					.setValue(this.plugin.settings.syncTimeRange)
+					.setValue(current)
 					.onChange(async (value) => {
-						this.plugin.settings.syncTimeRange = value as SyncTimeRange;
+						this.plugin.settings.syncTimeRange = value;
 						await this.plugin.saveSettings();
 					});
 			});
