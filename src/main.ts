@@ -230,12 +230,69 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 		const schemas = this.mcpClient.getAllToolSchemas();
-		console.debug("=== Granola MCP tool schemas ===");
+
+		// Log to console at info level so users don't need to enable
+		// "Verbose" in devtools to see the output. Console output is
+		// otherwise restricted; this command is explicitly user-triggered
+		// for debugging.
+		/* eslint-disable no-console */
+		console.log("=== Granola MCP tool schemas ===");
 		for (const [name, schema] of Object.entries(schemas)) {
-			console.debug(`— ${name} —`, schema);
+			console.log(`— ${name} —`, schema);
 		}
-		console.debug("===============================");
-		new Notice("Granola tool schemas logged to console.");
+		console.log("===============================");
+		/* eslint-enable no-console */
+
+		// Also write a JSON dump to the vault so users can inspect schemas
+		// without devtools. Stored next to the meetings folder.
+		const folderPath = normalizePath(
+			this.settings.folderPath || DEFAULT_SETTINGS.folderPath,
+		);
+		const dumpPath = normalizePath(`${folderPath}/.granola-debug-schemas.json`);
+		const dump = {
+			generatedAt: new Date().toISOString(),
+			pluginVersion: this.manifest.version,
+			settingsSnapshot: {
+				syncTimeRange: this.settings.syncTimeRange,
+				syncTranscripts: this.settings.syncTranscripts,
+				syncFrequency: this.settings.syncFrequency,
+			},
+			schemas,
+		};
+		try {
+			const folder = this.app.vault.getAbstractFileByPath(folderPath);
+			if (!folder) {
+				await this.app.vault.createFolder(folderPath);
+			}
+			const existing = this.app.vault.getAbstractFileByPath(dumpPath);
+			const json = JSON.stringify(dump, null, 2);
+			if (existing instanceof TFile) {
+				await this.app.vault.modify(existing, json);
+			} else {
+				await this.app.vault.create(dumpPath, json);
+			}
+		} catch (error) {
+			console.warn("Granola: failed to write schema dump", error);
+		}
+
+		// Surface the most actionable answer (list_meetings time_range +
+		// required) directly in a Notice so the user never has to leave
+		// Obsidian.
+		const listMeetings = schemas["list_meetings"] as
+			| { properties?: Record<string, { enum?: unknown }>; required?: unknown }
+			| undefined;
+		const enumValues = Array.isArray(listMeetings?.properties?.time_range?.enum)
+			? (listMeetings.properties.time_range.enum as unknown[])
+				.filter((v): v is string => typeof v === "string")
+			: [];
+		const required = Array.isArray(listMeetings?.required)
+			? listMeetings.required.includes("time_range")
+			: false;
+		const enumStr = enumValues.length > 0 ? enumValues.join(", ") : "(none)";
+		new Notice(
+			`Granola schema: time_range enum = [${enumStr}], required = ${required ? "yes" : "no"}. Full dump: ${dumpPath}`,
+			15_000,
+		);
 	}
 
 	/**
