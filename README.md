@@ -47,7 +47,7 @@ BRAT will automatically keep the plugin updated.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Time range | Last 30 days | How far back to look for meetings. Options are discovered from the Granola MCP server — on paid plans this includes "All time (unlimited)" |
+| Time range | Last 30 days | How far back to look for meetings. Preset ranges are discovered from the Granola MCP server (`this_week`, `last_week`, `last_30_days`). Picking **All time** requests every meeting via the server's `custom` range with a year-2000 floor. |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
 | Sync transcripts | Off | Include full meeting transcripts (1 extra API call per meeting) |
 | Folder path | `Meetings` | Where to save meeting notes |
