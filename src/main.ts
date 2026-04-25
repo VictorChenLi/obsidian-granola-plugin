@@ -325,7 +325,11 @@ export default class GranolaSyncPlugin extends Plugin {
 			try {
 				const response = await this.mcpClient.listMeetings(
 					this.settings.syncTimeRange,
-					folder.id,
+					{
+						folderId: folder.id,
+						customStart: this.settings.customStart,
+						customEnd: this.settings.customEnd,
+					},
 				);
 				const meetings = parseMeetingsResponse(response);
 				for (const meeting of meetings) {
@@ -389,10 +393,36 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 
+		// Validate custom-range inputs before hitting the API.
+		if (this.settings.syncTimeRange === "custom") {
+			const start = this.settings.customStart;
+			const end = this.settings.customEnd;
+			if (!start || !end) {
+				if (manual) {
+					new Notice(
+						"Custom range needs both a start and end date. Set them in plugin settings.",
+					);
+				}
+				return;
+			}
+			if (start > end) {
+				if (manual) {
+					new Notice("Custom range start date must be on or before the end date.");
+				}
+				return;
+			}
+		}
+
 		// List meetings
 		let listResponse: string;
 		try {
-			listResponse = await this.mcpClient.listMeetings(this.settings.syncTimeRange);
+			listResponse = await this.mcpClient.listMeetings(
+				this.settings.syncTimeRange,
+				{
+					customStart: this.settings.customStart,
+					customEnd: this.settings.customEnd,
+				},
+			);
 		} catch (error) {
 			if (error instanceof RateLimitError) {
 				if (manual) new Notice("Granola rate limit hit — please try again in a minute.");
