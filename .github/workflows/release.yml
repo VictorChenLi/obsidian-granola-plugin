@@ -33,13 +33,20 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           assets=(main.js manifest.json release/granola-meetings-simple-sync.zip)
+          # Treat any tag containing a hyphen (e.g. 2.1.0-beta.5) as a
+          # pre-release per semver convention.
+          prerelease_flag=""
+          if [[ "$tag" == *-* ]]; then
+            prerelease_flag="--prerelease"
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; uploading assets with --clobber"
             gh release upload "$tag" "${assets[@]}" --clobber
           else
-            echo "Creating release $tag"
+            echo "Creating release $tag (prerelease=${prerelease_flag:-no})"
             gh release create "$tag" \
               --title="$tag" \
               --generate-notes \
+              $prerelease_flag \
               "${assets[@]}"
           fi
