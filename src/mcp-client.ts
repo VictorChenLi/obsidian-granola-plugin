@@ -45,12 +45,18 @@ export class RateLimitError extends Error {
 export type SyncTimeRange = string;
 
 /**
- * Sentinel value we use to mean "call list_meetings without a time_range
- * parameter". The Granola MCP server's time_range enum is limited (currently
- * this_week / last_week / last_30_days), but on paid plans the server treats
- * an omitted time_range as unbounded history.
+ * Sentinel meaning "fetch all meetings ever". The Granola MCP server's
+ * `list_meetings.time_range` enum currently exposes
+ *   this_week / last_week / last_30_days / custom
+ * with a `last_30_days` default. To request unlimited history, we send
+ * `time_range: "custom"` with a very early `custom_start` and a future
+ * `custom_end` (see `listMeetings`).
  */
 export const UNLIMITED_TIME_RANGE = "__all_time__";
+
+// Floor for the "All time" custom range. Granola's product launched in 2024,
+// so anything older than this can't possibly exist.
+const UNLIMITED_RANGE_START = "2000-01-01";
 
 export interface ToolParamEnum {
 	name: string;
@@ -161,7 +167,18 @@ export class GranolaMcpClient {
 
 	async listMeetings(timeRange: SyncTimeRange, folderId?: string): Promise<string> {
 		const args: Record<string, unknown> = {};
-		if (timeRange && timeRange !== UNLIMITED_TIME_RANGE) {
+		if (timeRange === UNLIMITED_TIME_RANGE) {
+			// Request unlimited history via the server's `custom` time range.
+			// Fall back to last_30_days if the server doesn't advertise it.
+			const supportsCustom = this.getParamEnum("list_meetings", "time_range")
+				?.includes("custom") ?? false;
+			if (supportsCustom) {
+				args.time_range = "custom";
+				args.custom_start = UNLIMITED_RANGE_START;
+				args.custom_end = todayIsoDate(/* lookahead= */ 1);
+			}
+			// else: omit time_range and let the server default to last_30_days.
+		} else if (timeRange) {
 			args.time_range = timeRange;
 		}
 		if (folderId) args.folder_id = folderId;
@@ -293,6 +310,14 @@ export class GranolaMcpClient {
 			throw error;
 		}
 	}
+}
+
+function todayIsoDate(lookaheadDays = 0): string {
+	const d = new Date(Date.now() + lookaheadDays * 24 * 60 * 60 * 1000);
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${y}-${m}-${day}`;
 }
 
 function isTransportDropped(err: unknown): boolean {

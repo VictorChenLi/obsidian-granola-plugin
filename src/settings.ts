@@ -42,7 +42,8 @@ const SYNC_TIME_RANGE_LABELS: Record<string, string> = {
 	last_6_months: "Last 6 months",
 	last_year: "Last year",
 	last_12_months: "Last 12 months",
-	[UNLIMITED_TIME_RANGE]: "All time (paid plans only)",
+	[UNLIMITED_TIME_RANGE]: "All time",
+	custom: "Custom range",
 };
 
 const DEFAULT_TIME_RANGE_OPTIONS = [
@@ -143,13 +144,17 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Time range")
 			.setDesc(
-				"How far back to look for meetings when syncing. Granola's API constrains this to a fixed set of ranges; \"all time\" tries unlimited history (paid plans only).",
+				"How far back to look for meetings when syncing. Granola's API caps the preset ranges at 30 days; \"all time\" requests every meeting via a custom range.",
 			)
 			.addDropdown((dropdown) => {
 				const discovered = this.plugin.getAvailableTimeRanges();
-				const base = discovered && discovered.length > 0
+				const base = (discovered && discovered.length > 0
 					? [...discovered]
-					: [...DEFAULT_TIME_RANGE_OPTIONS];
+					: [...DEFAULT_TIME_RANGE_OPTIONS])
+					// Hide "custom" — picking it would require date inputs we
+					// don't render here; the "All time" option below uses
+					// custom internally with wide bounds.
+					.filter((v) => v !== "custom");
 				// Always offer the unlimited sentinel in addition to the
 				// server-advertised enum, unless we know the server requires
 				// time_range.
