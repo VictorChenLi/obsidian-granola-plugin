@@ -14,11 +14,13 @@ Publish a new beta version of `VictorChenLi/obsidian-granola-plugin` so it can b
 - **Plugin id**: `granola-meetings-simple-sync` — kept identical to upstream so BRAT installs into the same `.obsidian/plugins/granola-meetings-simple-sync/` folder and preserves the user's OAuth tokens and settings (`data.json`).
 - **Tag convention**: no `v` prefix (Obsidian community plugin requirement). Use `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH-beta.N`.
 - **Tag must match `manifest.json.version` exactly** — BRAT enforces this.
-- **Actions on the fork**: disabled. The `.github/workflows/release.yml` workflow would normally handle tag-triggered releases, but it won't fire until the user visits `https://github.com/VictorChenLi/obsidian-granola-plugin/actions` once and clicks "I understand my workflows, go ahead and enable them." Until then, we build and release manually (steps below).
+- **Actions on the fork**: **enabled**. `.github/workflows/release.yml` runs automatically on tag push and is **idempotent** — it will create the release if it doesn't exist, or upload assets with `--clobber` if it does. So you can either:
+  - **Auto path (recommended)**: push the tag and let the workflow handle the release entirely. Skip step 6 (local package) and step 7 (manual release create) below — just push the tag and verify in step 8.
+  - **Manual path**: run `npm run package` + `gh release create` yourself, then push the tag. The workflow will see the release already exists and upload its own copy of the assets with `--clobber` (harmless, fully overwrites with identical content).
 
 ## Workflow
 
-Copy this checklist and tick items as you go:
+Copy this checklist and tick items as you go. Steps 6 and 7 are **optional** when the GitHub Actions workflow handles it — do them only if you need a release out faster than the workflow's ~1 minute build time, or to write custom release notes (the workflow uses `--generate-notes` only).
 
 ```
 Release checklist:
@@ -26,9 +28,9 @@ Release checklist:
 - [ ] 2. Merge feature branch(es) into main
 - [ ] 3. Bump version (manifest.json, versions.json, package.json)
 - [ ] 4. Commit version bump and push main
-- [ ] 5. Create and push git tag
-- [ ] 6. Build artifacts locally (npm run package)
-- [ ] 7. Create GitHub release with gh release create
+- [ ] 5. Create and push git tag (Actions workflow runs on push)
+- [ ] 6. (optional) Build artifacts locally (npm run package)
+- [ ] 7. (optional) Create GitHub release with gh release create + custom notes
 - [ ] 8. Verify release and tell user how to update in BRAT
 ```
 
@@ -195,15 +197,9 @@ If the user installed via BRAT tracking `philfreo/obsidian-granola-plugin`, BRAT
 
 This is a Granola MCP server quirk (see `src/mcp-client.ts` — `UNLIMITED_TIME_RANGE` sentinel). The server only advertises `this_week / last_week / last_30_days` but accepts omitted `time_range` as unbounded on paid plans. No release impact — just don't promise more granularity than the server exposes.
 
-## Enabling Actions (one-time, makes future releases automatic)
+## Actions are enabled
 
-If the user wants `git push origin <tag>` to auto-release in future:
-
-1. Open `https://github.com/VictorChenLi/obsidian-granola-plugin/actions` in a browser.
-2. Click "I understand my workflows, go ahead and enable them."
-3. Future tag pushes will trigger `.github/workflows/release.yml`, which builds and uploads `main.js`, `manifest.json`, and the zip automatically.
-
-The user still has to do steps 1–5 of the workflow above (merge, bump, tag, push). Only steps 6–7 (local build + manual release) become unnecessary.
+`.github/workflows/release.yml` runs on every tag push and is idempotent (uses `gh release create` if missing, `gh release upload --clobber` if the release already exists). For most releases, just push the tag and verify with step 8. If you want richer release notes than `--generate-notes`, do steps 6–7 manually before the workflow runs (or after — the workflow's `--clobber` upload won't change the body).
 
 ## Quick reference: one-shot release command
 

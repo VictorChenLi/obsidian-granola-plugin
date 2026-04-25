@@ -27,13 +27,19 @@ jobs:
       - name: Build and package
         run: npm run package
 
-      - name: Create release
+      - name: Create or update release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" \
-            --title="$tag" \
-            --generate-notes \
-            main.js manifest.json \
-            release/granola-meetings-simple-sync.zip
+          assets=(main.js manifest.json release/granola-meetings-simple-sync.zip)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; uploading assets with --clobber"
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            echo "Creating release $tag"
+            gh release create "$tag" \
+              --title="$tag" \
+              --generate-notes \
+              "${assets[@]}"
+          fi
