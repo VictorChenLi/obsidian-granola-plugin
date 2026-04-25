@@ -60,6 +60,21 @@ function humanizeTimeRange(value: string): string {
 		.join(" ");
 }
 
+function todayIsoDate(): string {
+	return toIsoDate(new Date());
+}
+
+function daysAgoIsoDate(days: number): string {
+	return toIsoDate(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
+}
+
+function toIsoDate(d: Date): string {
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${y}-${m}-${day}`;
+}
+
 export interface GranolaSyncSettings {
 	folderPath: string;
 	filenamePattern: string;
@@ -69,6 +84,16 @@ export interface GranolaSyncSettings {
 	skipExistingNotes: boolean;
 	matchAttendeesByEmail: boolean;
 	syncTimeRange: SyncTimeRange;
+	/**
+	 * ISO date (YYYY-MM-DD) for custom range start. Used only when
+	 * `syncTimeRange === "custom"`. Empty string when unset.
+	 */
+	customStart: string;
+	/**
+	 * ISO date (YYYY-MM-DD) for custom range end. Used only when
+	 * `syncTimeRange === "custom"`. Empty string when unset.
+	 */
+	customEnd: string;
 	syncTranscripts: boolean;
 }
 
@@ -81,6 +106,8 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	skipExistingNotes: true,
 	matchAttendeesByEmail: true,
 	syncTimeRange: "last_30_days",
+	customStart: "",
+	customEnd: "",
 	syncTranscripts: false,
 };
 
@@ -144,17 +171,13 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Time range")
 			.setDesc(
-				"How far back to look for meetings when syncing. Granola's API caps the preset ranges at 30 days; \"all time\" requests every meeting via a custom range.",
+				"How far back to look for meetings when syncing. Preset ranges come from Granola's API; pick \"all time\" to fetch every meeting, or \"custom range\" to choose your own start and end dates.",
 			)
 			.addDropdown((dropdown) => {
 				const discovered = this.plugin.getAvailableTimeRanges();
-				const base = (discovered && discovered.length > 0
+				const base = discovered && discovered.length > 0
 					? [...discovered]
-					: [...DEFAULT_TIME_RANGE_OPTIONS])
-					// Hide "custom" — picking it would require date inputs we
-					// don't render here; the "All time" option below uses
-					// custom internally with wide bounds.
-					.filter((v) => v !== "custom");
+					: [...DEFAULT_TIME_RANGE_OPTIONS];
 				// Always offer the unlimited sentinel in addition to the
 				// server-advertised enum, unless we know the server requires
 				// time_range.
@@ -172,9 +195,49 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 					.setValue(current)
 					.onChange(async (value) => {
 						this.plugin.settings.syncTimeRange = value;
+						// Seed sensible defaults the first time the user
+						// switches to "custom" so the date pickers aren't
+						// blank.
+						if (value === "custom") {
+							if (!this.plugin.settings.customEnd) {
+								this.plugin.settings.customEnd = todayIsoDate();
+							}
+							if (!this.plugin.settings.customStart) {
+								this.plugin.settings.customStart =
+									daysAgoIsoDate(30);
+							}
+						}
 						await this.plugin.saveSettings();
+						// Re-render so custom date pickers show/hide.
+						this.display();
 					});
 			});
+
+		// Custom range pickers — only shown when "custom" is selected.
+		if (this.plugin.settings.syncTimeRange === "custom") {
+			new Setting(containerEl)
+				.setName("Custom start date")
+				.setDesc("Earliest meeting date to include (inclusive).")
+				.addText((text) => {
+					text.inputEl.type = "date";
+					text.setValue(this.plugin.settings.customStart)
+						.onChange(async (value) => {
+							this.plugin.settings.customStart = value;
+							await this.plugin.saveSettings();
+						});
+				});
+			new Setting(containerEl)
+				.setName("Custom end date")
+				.setDesc("Latest meeting date to include (inclusive).")
+				.addText((text) => {
+					text.inputEl.type = "date";
+					text.setValue(this.plugin.settings.customEnd)
+						.onChange(async (value) => {
+							this.plugin.settings.customEnd = value;
+							await this.plugin.saveSettings();
+						});
+				});
+		}
 
 		new Setting(containerEl)
 			.setName("Sync frequency")

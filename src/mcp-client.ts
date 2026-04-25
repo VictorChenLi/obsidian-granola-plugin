@@ -63,6 +63,14 @@ export interface ToolParamEnum {
 	values: string[];
 }
 
+export interface ListMeetingsOptions {
+	folderId?: string;
+	/** ISO date (YYYY-MM-DD); only used when `timeRange === "custom"`. */
+	customStart?: string;
+	/** ISO date (YYYY-MM-DD); only used when `timeRange === "custom"`. */
+	customEnd?: string;
+}
+
 export class GranolaMcpClient {
 	private client: Client | null = null;
 	private authProvider: GranolaAuthProvider;
@@ -165,11 +173,15 @@ export class GranolaMcpClient {
 		return Boolean(properties && paramName in properties);
 	}
 
-	async listMeetings(timeRange: SyncTimeRange, folderId?: string): Promise<string> {
+	async listMeetings(
+		timeRange: SyncTimeRange,
+		options: ListMeetingsOptions = {},
+	): Promise<string> {
 		const args: Record<string, unknown> = {};
 		if (timeRange === UNLIMITED_TIME_RANGE) {
 			// Request unlimited history via the server's `custom` time range.
-			// Fall back to last_30_days if the server doesn't advertise it.
+			// Fall back to omitting time_range (server defaults to
+			// last_30_days) if the server doesn't advertise `custom`.
 			const supportsCustom = this.getParamEnum("list_meetings", "time_range")
 				?.includes("custom") ?? false;
 			if (supportsCustom) {
@@ -177,11 +189,14 @@ export class GranolaMcpClient {
 				args.custom_start = UNLIMITED_RANGE_START;
 				args.custom_end = todayIsoDate(/* lookahead= */ 1);
 			}
-			// else: omit time_range and let the server default to last_30_days.
+		} else if (timeRange === "custom") {
+			args.time_range = "custom";
+			if (options.customStart) args.custom_start = options.customStart;
+			if (options.customEnd) args.custom_end = options.customEnd;
 		} else if (timeRange) {
 			args.time_range = timeRange;
 		}
-		if (folderId) args.folder_id = folderId;
+		if (options.folderId) args.folder_id = options.folderId;
 		return this.callToolText("list_meetings", args);
 	}
 
