@@ -169,6 +169,19 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Backfill missing transcripts")
+			.setDesc(
+				"Walk every Granola-synced note in your meetings folder and append a transcript section to any note that doesn't already have one. Existing note content is preserved.",
+			)
+			.addButton((button) =>
+				button
+					.setButtonText("Backfill now")
+					.onClick(() => {
+						void this.plugin.backfillMissingTranscripts();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Time range")
 			.setDesc(
 				"How far back to look for meetings when syncing. Preset ranges come from Granola's API; pick \"all time\" to fetch every meeting, or \"custom range\" to choose your own start and end dates.",
