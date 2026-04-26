@@ -60,6 +60,7 @@ BRAT will automatically keep the plugin updated.
 ## Usage
 
 1. **Sync meetings**: By default your meetings will be synced every 15 minutes. This setting is customizable, and you can also trigger a sync by clicking the ribbon icon, using the command palette ("Granola Meetings Simple Sync: Sync meetings"), or clicking "Sync now" in settings.
+2. **Backfill missing transcripts**: If you turned on **Sync transcripts** after some meetings were already synced (or a sync was cut short by rate limits), run **"Granola Meetings Simple Sync: Backfill missing transcripts"** from the command palette. The plugin scans every Granola-synced note in your meetings folder, fetches transcripts only for notes that don't already have a `## Transcript` section, and appends one to the end of each. It costs one `get_meeting_transcript` API call per missing transcript — no `list_meetings`/`get_meetings` overhead — so it's roughly half the API cost of a full re-sync. Local edits to existing note content are preserved.
 
 ## Template Variables
 

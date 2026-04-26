@@ -13,6 +13,7 @@ import {
 	parseTranscriptResponse,
 	parseFoldersResponse,
 	buildMeetingData,
+	formatTranscriptText,
 } from "./response-parser";
 import { loadTemplate, applyTemplate, generateFilename } from "./template";
 
@@ -71,6 +72,12 @@ export default class GranolaSyncPlugin extends Plugin {
 			id: "sync-meetings",
 			name: "Sync meetings",
 			callback: () => void this.syncMeetings(true),
+		});
+
+		this.addCommand({
+			id: "backfill-transcripts",
+			name: "Backfill missing transcripts",
+			callback: () => void this.backfillMissingTranscripts(),
 		});
 
 		this.addCommand({
@@ -597,4 +604,142 @@ export default class GranolaSyncPlugin extends Plugin {
 			new Notice("Granola rate limit hit during sync — some meetings will retry next cycle.");
 		}
 	}
+
+	/**
+	 * Walk every Granola-synced note in the configured folder and append a
+	 * `## Transcript` section for any note that doesn't already have one.
+	 * Existing notes are otherwise left untouched, so this is safe to run
+	 * even when "Skip existing notes" is enabled.
+	 *
+	 * Costs one `get_meeting_transcript` call per note missing a transcript;
+	 * `list_meetings` and `get_meetings` are not called.
+	 */
+	async backfillMissingTranscripts(): Promise<void> {
+		if (!this.isAuthenticated()) {
+			new Notice("Connect to Granola first in settings.");
+			return;
+		}
+		if (this.isSyncing) {
+			new Notice("A sync is already running. Try again when it finishes.");
+			return;
+		}
+		this.isSyncing = true;
+		this.mcpClient.resetRateLimitCircuit();
+
+		try {
+			if (!this.mcpClient.isConnected) {
+				try {
+					await this.mcpClient.connect();
+				} catch (error) {
+					new Notice("Failed to connect to Granola.");
+					console.error("Granola: backfill connect failed", error);
+					return;
+				}
+			}
+
+			const folderPath = normalizePath(
+				this.settings.folderPath || DEFAULT_SETTINGS.folderPath,
+			);
+			const folderPrefix = folderPath + "/";
+
+			interface Candidate {
+				file: TFile;
+				granolaId: string;
+				body: string;
+			}
+			const candidates: Candidate[] = [];
+
+			for (const file of this.app.vault.getMarkdownFiles()) {
+				if (!file.path.startsWith(folderPrefix)) continue;
+				const cache = this.app.metadataCache.getFileCache(file);
+				const granolaId = cache?.frontmatter?.granola_id as
+					| string
+					| undefined;
+				if (!granolaId) continue;
+				const body = await this.app.vault.read(file);
+				if (hasTranscriptSection(body)) continue;
+				candidates.push({ file, granolaId, body });
+			}
+
+			if (candidates.length === 0) {
+				new Notice(
+					"No Granola notes are missing a transcript section.",
+				);
+				return;
+			}
+
+			new Notice(
+				`Backfilling transcripts for ${candidates.length} meeting${candidates.length === 1 ? "" : "s"}…`,
+			);
+
+			let added = 0;
+			let empty = 0;
+			let failed = 0;
+			let rateLimited = false;
+
+			for (const { file, granolaId, body } of candidates) {
+				try {
+					const response = await this.mcpClient.getTranscript(granolaId);
+					const raw = parseTranscriptResponse(response);
+					const formatted = formatTranscriptText(raw);
+					if (!formatted.trim()) {
+						empty++;
+						continue;
+					}
+					const separator = body.endsWith("\n\n")
+						? ""
+						: body.endsWith("\n")
+						? "\n"
+						: "\n\n";
+					const trailer = formatted.endsWith("\n") ? "" : "\n";
+					const next = `${body}${separator}## Transcript\n\n${formatted}${trailer}`;
+					await this.app.vault.modify(file, next);
+					added++;
+				} catch (error) {
+					if (error instanceof RateLimitError) {
+						console.warn(
+							"Granola: backfill rate limited, stopping early",
+							error,
+						);
+						rateLimited = true;
+						break;
+					}
+					failed++;
+					console.error(
+						`Granola: backfill failed for ${granolaId}`,
+						error,
+					);
+				}
+			}
+
+			const parts: string[] = [];
+			parts.push(
+				`Backfilled ${added} transcript${added === 1 ? "" : "s"}`,
+			);
+			if (empty > 0) {
+				parts.push(
+					`${empty} had no transcript available`,
+				);
+			}
+			if (failed > 0) {
+				parts.push(`${failed} failed`);
+			}
+			const remaining = candidates.length - added - empty - failed;
+			if (rateLimited && remaining > 0) {
+				parts.push(`${remaining} skipped (rate limit — run again later)`);
+			}
+			new Notice(parts.join("; ") + ".");
+		} finally {
+			this.isSyncing = false;
+		}
+	}
+}
+
+/**
+ * Detect whether a note body already has a transcript section. We accept
+ * any heading level (#..######) whose text is exactly "Transcript", which
+ * matches both the default template and common user variants.
+ */
+function hasTranscriptSection(body: string): boolean {
+	return /^#{1,6}\s+Transcript\s*$/m.test(body);
 }
