@@ -95,7 +95,22 @@ export interface GranolaSyncSettings {
 	 */
 	customEnd: string;
 	syncTranscripts: boolean;
+	/**
+	 * Detected Granola subscription tier, used to surface free-plan
+	 * limitations in the UI and short-circuit paid-only operations
+	 * (folder sync, transcript fetch). Detected during sync; persisted so
+	 * we don't keep nagging the user once they've seen the notice.
+	 *
+	 * - "unknown": never connected, or never run a sync since detection
+	 *   was added.
+	 * - "free": Granola Basic plan — no folders, no transcripts, only
+	 *   last 30 days of meetings.
+	 * - "paid": Business or Enterprise plan — full feature set.
+	 */
+	paidPlanStatus: "unknown" | "free" | "paid";
 }
+
+export type PaidPlanStatus = GranolaSyncSettings["paidPlanStatus"];
 
 export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	folderPath: "Meetings",
@@ -109,6 +124,7 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	customStart: "",
 	customEnd: "",
 	syncTranscripts: false,
+	paidPlanStatus: "unknown",
 };
 
 export class GranolaSyncSettingTab extends PluginSettingTab {
@@ -139,6 +155,31 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 							this.display();
 						})
 				);
+
+			const planSetting = new Setting(containerEl).setName("Granola plan");
+			const status = this.plugin.settings.paidPlanStatus;
+			if (status === "paid") {
+				planSetting.setDesc(
+					"Paid plan detected (business or enterprise). All sync features available.",
+				);
+			} else if (status === "free") {
+				planSetting.setDesc(
+					"Free (basic) plan detected. Sync is limited to the last 30 days; folder sync and transcripts require an upgrade. See https://www.granola.ai/pricing.",
+				);
+			} else {
+				planSetting.setDesc(
+					"Plan not yet detected. Run a sync — the plugin will identify your plan from the API response and adapt behaviour automatically.",
+				);
+			}
+			planSetting.addButton((button) =>
+				button
+					.setButtonText("Re-detect")
+					.setTooltip("Forget the cached plan status; the next sync will re-detect.")
+					.onClick(async () => {
+						await this.plugin.resetPlanDetection();
+						this.display();
+					})
+			);
 		} else {
 			new Setting(containerEl)
 				.setName("Not connected")
@@ -168,23 +209,30 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
-			.setName("Backfill missing transcripts")
-			.setDesc(
-				"Walk every Granola-synced note in your meetings folder and append a transcript section to any note that doesn't already have one. Existing note content is preserved.",
-			)
-			.addButton((button) =>
-				button
-					.setButtonText("Backfill now")
-					.onClick(() => {
-						void this.plugin.backfillMissingTranscripts();
-					})
-			);
+		const backfillSetting = new Setting(containerEl)
+			.setName("Backfill missing transcripts");
+		const backfillIsFree = this.plugin.settings.paidPlanStatus === "free";
+		backfillSetting.setDesc(
+			backfillIsFree
+				? "Requires a paid Granola plan — `get_meeting_transcript` is not available on Basic. Upgrade at https://www.granola.ai/pricing to enable."
+				: "Walk every Granola-synced note in your meetings folder and append a transcript section to any note that doesn't already have one. Existing note content is preserved.",
+		);
+		backfillSetting.addButton((button) => {
+			button
+				.setButtonText("Backfill now")
+				.onClick(() => {
+					void this.plugin.backfillMissingTranscripts();
+				});
+			if (backfillIsFree) button.setDisabled(true);
+			return button;
+		});
 
 		new Setting(containerEl)
 			.setName("Time range")
 			.setDesc(
-				"How far back to look for meetings when syncing. Preset ranges come from Granola's API; pick \"all time\" to fetch every meeting, or \"custom range\" to choose your own start and end dates.",
+				this.plugin.settings.paidPlanStatus === "free"
+					? "How far back to look for meetings when syncing. Note: Granola's Basic (free) plan caps history at the last 30 days regardless of selection."
+					: "How far back to look for meetings when syncing. Preset ranges come from Granola's API; pick \"all time\" to fetch every meeting, or \"custom range\" to choose your own start and end dates.",
 			)
 			.addDropdown((dropdown) => {
 				const discovered = this.plugin.getAvailableTimeRanges();
@@ -271,7 +319,9 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Sync transcripts")
 			.setDesc(
-				"Include full meeting transcripts. Each meeting requires an extra API call."
+				this.plugin.settings.paidPlanStatus === "free"
+					? "Requires a paid Granola plan — `get_meeting_transcript` is not available on Basic. Toggle is ignored on free plans."
+					: "Include full meeting transcripts. Each meeting requires an extra API call.",
 			)
 			.addToggle((toggle) =>
 				toggle

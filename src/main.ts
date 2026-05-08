@@ -5,6 +5,7 @@ import {
 	DEFAULT_SETTINGS,
 	GranolaSyncSettingTab,
 	SYNC_FREQUENCY_MS,
+	type PaidPlanStatus,
 } from "./settings";
 import { GranolaAuthProvider, type AuthStorage } from "./auth";
 import { GranolaMcpClient, RateLimitError } from "./mcp-client";
@@ -182,8 +183,51 @@ export default class GranolaSyncPlugin extends Plugin {
 		await this.mcpClient.disconnect();
 		delete this.pluginData.oauthTokens;
 		delete this.pluginData.oauthClientInfo;
+		// Reset plan detection so the next account starts fresh.
+		this.settings.paidPlanStatus = "unknown";
+		this.pluginData.paidPlanStatus = "unknown";
 		await this.savePluginData();
 		new Notice("Disconnected from Granola");
+	}
+
+	/**
+	 * Reset detected plan status so the next sync re-detects. Used by the
+	 * "Re-detect plan" button in settings.
+	 */
+	async resetPlanDetection(): Promise<void> {
+		this.settings.paidPlanStatus = "unknown";
+		this.pluginData.paidPlanStatus = "unknown";
+		await this.savePluginData();
+	}
+
+	/**
+	 * Record a plan signal observed during sync. Persists the new status if
+	 * it changed and shows a one-time notice when transitioning out of
+	 * "unknown" so users on the free plan understand why folders/transcripts
+	 * aren't appearing. Called from `buildFolderMap` and transcript fetch
+	 * paths — see `looksLikePaidOnlyError` for the heuristic.
+	 */
+	private async recordPlanSignal(
+		status: Exclude<PaidPlanStatus, "unknown">,
+		reason: string,
+	): Promise<void> {
+		if (this.settings.paidPlanStatus === status) return;
+		const previous = this.settings.paidPlanStatus;
+		this.settings.paidPlanStatus = status;
+		this.pluginData.paidPlanStatus = status;
+		await this.savePluginData();
+		console.debug(`Granola: plan signal ${previous} -> ${status} (${reason})`);
+
+		if (previous === "unknown") {
+			if (status === "free") {
+				new Notice(
+					"Granola free plan detected. Sync is limited to the last 30 days, and folder + transcript sync require a paid plan.",
+					12_000,
+				);
+			} else {
+				new Notice("Granola paid plan detected. All sync features enabled.", 6_000);
+			}
+		}
 	}
 
 	private async handleAuthCallback(code: string): Promise<void> {
@@ -317,8 +361,14 @@ export default class GranolaSyncPlugin extends Plugin {
 		try {
 			const response = await this.mcpClient.listMeetingFolders();
 			folders = parseFoldersResponse(response);
+			// A successful folder list is a strong "paid plan" signal — the
+			// MCP docs mark `list_meeting_folders` as paid-only.
+			await this.recordPlanSignal("paid", "list_meeting_folders ok");
 		} catch (error) {
 			// Likely a free/basic plan or transient error — skip folder sync.
+			if (looksLikePaidOnlyError(error)) {
+				await this.recordPlanSignal("free", "list_meeting_folders denied");
+			}
 			console.warn("Granola: folder sync skipped", error);
 			return map;
 		}
@@ -561,15 +611,29 @@ export default class GranolaSyncPlugin extends Plugin {
 				// Optionally fetch transcript
 				let transcript = "";
 				if (this.settings.syncTranscripts && !rateLimitHit) {
-					try {
-						const transcriptResponse = await this.mcpClient.getTranscript(details.id);
-						transcript = parseTranscriptResponse(transcriptResponse);
-					} catch (error) {
-						if (error instanceof RateLimitError) {
-							console.warn("Granola: transcript fetch rate limited, skipping remaining transcripts");
-							rateLimitHit = true;
-						} else {
-							console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+					if (this.settings.paidPlanStatus === "free") {
+						// Free plan can't fetch transcripts — don't bother
+						// hammering the API and burning the rate limit budget.
+					} else {
+						try {
+							const transcriptResponse = await this.mcpClient.getTranscript(details.id);
+							transcript = parseTranscriptResponse(transcriptResponse);
+							if (transcript && this.settings.paidPlanStatus === "unknown") {
+								// Successful transcript fetch confirms paid plan.
+								await this.recordPlanSignal("paid", "get_meeting_transcript ok");
+							}
+						} catch (error) {
+							if (error instanceof RateLimitError) {
+								console.warn("Granola: transcript fetch rate limited, skipping remaining transcripts");
+								rateLimitHit = true;
+							} else if (looksLikePaidOnlyError(error)) {
+								await this.recordPlanSignal("free", "get_meeting_transcript denied");
+								// `paidPlanStatus` is now "free", so the
+								// guard at the top of this block will skip
+								// transcript fetch on subsequent iterations.
+							} else {
+								console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+							}
 						}
 					}
 				}
@@ -617,6 +681,13 @@ export default class GranolaSyncPlugin extends Plugin {
 	async backfillMissingTranscripts(): Promise<void> {
 		if (!this.isAuthenticated()) {
 			new Notice("Connect to Granola first in settings.");
+			return;
+		}
+		if (this.settings.paidPlanStatus === "free") {
+			new Notice(
+				"Transcript backfill needs a paid Granola plan — `get_meeting_transcript` is unavailable on Basic.",
+				10_000,
+			);
 			return;
 		}
 		if (this.isSyncing) {
@@ -677,11 +748,15 @@ export default class GranolaSyncPlugin extends Plugin {
 			let failed = 0;
 			let rateLimited = false;
 
+			let planBlocked = false;
 			for (const { file, granolaId, body } of candidates) {
 				try {
 					const response = await this.mcpClient.getTranscript(granolaId);
 					const raw = parseTranscriptResponse(response);
 					const formatted = formatTranscriptText(raw);
+					if (formatted.trim() && this.settings.paidPlanStatus === "unknown") {
+						await this.recordPlanSignal("paid", "backfill get_meeting_transcript ok");
+					}
 					if (!formatted.trim()) {
 						empty++;
 						continue;
@@ -702,6 +777,11 @@ export default class GranolaSyncPlugin extends Plugin {
 							error,
 						);
 						rateLimited = true;
+						break;
+					}
+					if (looksLikePaidOnlyError(error)) {
+						await this.recordPlanSignal("free", "backfill get_meeting_transcript denied");
+						planBlocked = true;
 						break;
 					}
 					failed++;
@@ -728,6 +808,9 @@ export default class GranolaSyncPlugin extends Plugin {
 			if (rateLimited && remaining > 0) {
 				parts.push(`${remaining} skipped (rate limit — run again later)`);
 			}
+			if (planBlocked && remaining > 0) {
+				parts.push(`${remaining} skipped (paid plan required)`);
+			}
 			new Notice(parts.join("; ") + ".");
 		} finally {
 			this.isSyncing = false;
@@ -742,4 +825,33 @@ export default class GranolaSyncPlugin extends Plugin {
  */
 function hasTranscriptSection(body: string): boolean {
 	return /^#{1,6}\s+Transcript\s*$/m.test(body);
+}
+
+/**
+ * Heuristic to recognise a "this tool is paid-only" error from the Granola
+ * MCP server. Granola's responses for free-plan users typically include
+ * phrases like "paid plan", "upgrade", or "not available on your plan".
+ * We deliberately ignore generic auth errors (401/unauthorized) so that a
+ * stale token doesn't get misclassified as a free-plan signal.
+ */
+function looksLikePaidOnlyError(error: unknown): boolean {
+	const msg = extractErrorMessage(error);
+	if (!msg) return false;
+	if (/rate[\s-]?limit|too many requests/i.test(msg)) return false;
+	return /paid plan|paid only|upgrade (your|to)|not (available|allowed) on (your|the (basic|free)) plan|requires (a )?paid|business plan|enterprise plan|forbidden|403/i.test(
+		msg,
+	);
+}
+
+function extractErrorMessage(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	if (typeof error === "string") return error;
+	if (error && typeof error === "object") {
+		try {
+			return JSON.stringify(error);
+		} catch {
+			return "";
+		}
+	}
+	return "";
 }

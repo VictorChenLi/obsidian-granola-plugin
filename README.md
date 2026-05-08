@@ -131,6 +131,24 @@ tags:
 {{/granola_transcript}}
 ```
 
+## Granola plan detection
+
+The plugin auto-detects whether you're on Granola's free Basic plan or a paid Business/Enterprise plan, and adapts behaviour to match the [official MCP plan limits](https://docs.granola.ai/help-center/sharing/integrations/mcp):
+
+| Plan | History | `list_meeting_folders` | `get_meeting_transcript` |
+|---|---|---|---|
+| Basic (free) | Last 30 days only | Not available | Not available |
+| Business / Enterprise | Unlimited | Available | Available |
+
+Detection happens automatically during the first sync (or at any time you click **Re-detect** in settings). When the plan is detected as free:
+
+- Folder sync silently skips (you'll get an empty `granola_folder` frontmatter).
+- Transcript fetches are skipped during sync to save your rate-limit budget.
+- The **Backfill missing transcripts** button is disabled with an explanatory tooltip.
+- The "Time range" setting shows a hint that history is capped at 30 days regardless of selection.
+
+You'll see a one-time Notice when the plan is first detected. If you upgrade your Granola plan, click **Re-detect** in plugin settings to clear the cached status.
+
 ## Rate limits
 
 Granola's MCP server rate-limits requests (documented at ~100 req/min, but expensive tools like `get_meeting_transcript` are stricter, and any other MCP clients you have connected — Claude Desktop, ChatGPT, etc. — share the same budget). The plugin handles this as follows:
