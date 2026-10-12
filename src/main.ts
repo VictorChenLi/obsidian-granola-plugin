@@ -838,7 +838,7 @@ function looksLikePaidOnlyError(error: unknown): boolean {
 	const msg = extractErrorMessage(error);
 	if (!msg) return false;
 	if (/rate[\s-]?limit|too many requests/i.test(msg)) return false;
-	return /paid plan|paid only|upgrade (your|to)|not (available|allowed) on (your|the (basic|free)) plan|requires (a )?paid|business plan|enterprise plan|forbidden|403/i.test(
+	return /paid plan|paid only|paid (granola )?tiers?|only available to paid|upgrade (your|to)|not (available|allowed) on (your|the (basic|free)) plan|requires (a )?paid|business plan|enterprise plan|forbidden|403/i.test(
 		msg,
 	);
 }

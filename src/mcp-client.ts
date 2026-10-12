@@ -281,10 +281,17 @@ export class GranolaMcpClient {
 			}
 			await this.rateLimiter.acquire();
 			const result = await client.callTool({ name, arguments: args });
-			return (result.content as Array<{ type: string; text?: string }>)
+			const text = (result.content as Array<{ type: string; text?: string }>)
 				.filter((c) => c.type === "text" && typeof c.text === "string")
 				.map((c) => c.text!)
 				.join("\n");
+			// Tool-level failures (plan restrictions, validation, rate limits)
+			// come back as normal results flagged isError. Throw so callers
+			// don't treat the error message as data.
+			if (result.isError) {
+				throw new Error(text || `Granola tool ${name} failed`);
+			}
+			return text;
 		};
 
 		let triedReconnect = false;

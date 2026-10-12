@@ -44,14 +44,23 @@ export interface ParsedFolder {
  */
 export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 	const meetings: ParsedMeetingDetails[] = [];
-	const meetingRegex = /<meeting\s+id="([^"]+)"\s+title="([^"]*?)"\s+date="([^"]*?)">([\s\S]*?)<\/meeting>/g;
+	// Match on attributes generically: the server adds new ones over time
+	// (created_at, updated_at, url, ...) and their order isn't guaranteed.
+	const meetingRegex = /<meeting\b([^>]*)>([\s\S]*?)<\/meeting>/g;
 
 	let match;
 	while ((match = meetingRegex.exec(xml)) !== null) {
-		const [, id, title, date, body] = match;
+		const [, attrText, body] = match;
+		const attrs = parseAttributes(attrText);
+		const id = attrs.id;
+		if (!id) continue;
+		const title = attrs.title ?? "";
+		const date = attrs.date ?? "";
 
 		const participantsMatch = body.match(/<known_participants>\s*([\s\S]*?)\s*<\/known_participants>/);
-		const participants = participantsMatch ? parseParticipants(participantsMatch[1].trim()) : [];
+		const participants = participantsMatch
+			? parseParticipants(decodeXmlEntities(participantsMatch[1].trim()))
+			: [];
 
 		const notesMatch = body.match(/<private_notes>\s*([\s\S]*?)\s*<\/private_notes>/);
 		const privateNotes = notesMatch ? notesMatch[1].trim() : "";
@@ -63,6 +72,27 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 	}
 
 	return meetings;
+}
+
+function parseAttributes(text: string): Record<string, string> {
+	const attrs: Record<string, string> = {};
+	const attrRegex = /([\w:-]+)="([^"]*)"/g;
+	let m;
+	while ((m = attrRegex.exec(text)) !== null) {
+		attrs[m[1]] = decodeXmlEntities(m[2]);
+	}
+	return attrs;
+}
+
+function decodeXmlEntities(text: string): string {
+	return text
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'")
+		.replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+		.replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
+		.replace(/&amp;/g, "&");
 }
 
 /**
